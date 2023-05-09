@@ -1,0 +1,10 @@
+project: comdb2
+target: cdb2sql
+
+testsuite:
+  - file:///testsuite
+
+cmds:
+  - cmd: /comdb2/bb/bin/cdb2sql fuzzdb local
+    env:
+      MFUZZ_DOCKER_ENTRYPOINT: "1"

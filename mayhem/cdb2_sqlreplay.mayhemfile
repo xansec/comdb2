@@ -1,0 +1,10 @@
+project: comdb2
+target: cdb2-sqlreplay
+
+testsuite:
+  - file:///testsuite
+
+cmds:
+  - cmd: /comdb2/bb/bin/cdb2_sqlreplay fuzzdb @@
+    env:
+      MFUZZ_DOCKER_ENTRYPOINT: "1"

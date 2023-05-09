@@ -23,7 +23,7 @@ RUN mkdir -p /comdb2/build
 WORKDIR /comdb2
 COPY . .
 WORKDIR /comdb2/build
-RUN cmake -DCMAKE_INSTALL_LOCAL_ONLY=1 -DCMAKE_INSTALL_PREFIX=/comdb2/bb .. && make && make install
+RUN cmake -DCMAKE_INSTALL_LOCAL_ONLY=1 -DCMAKE_INSTALL_PREFIX=/comdb2/bb .. && make -j$(nproc) && make install
 
 FROM ubuntu
 
@@ -40,11 +40,19 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libssl-dev           \
     libz1 \
     libunwind8 \
-    tzdata
-RUN rm -rf /var/lib/apt/lists/*
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY ./mayhem/sql.dict /
+
 COPY --from=builder /comdb2/bb /comdb2/bb
 RUN mkdir /testsuite
 COPY --from=builder /comdb2/tests/sqlite_bugs.test/t00.sql /testsuite
+
+ENV DB_NAME=fuzzdb
+RUN /comdb2/bb/bin/comdb2 --create fuzzdb && \
+    echo "setattr directio 0" >> /comdb2/bb/var/cdb2/fuzzdb/fuzzdb.lrl
+
 COPY ./mayhem/entrypoint.sh /
 RUN chmod a+x /entrypoint.sh
 

@@ -2,7 +2,7 @@ project: comdb2
 target: cdb2-stat
 
 testsuite:
-  - file:///testsuite
+  - file:///testsuite/cdb2_stat
 
 cmds:
   - cmd: /comdb2/bb/bin/cdb2_stat -d @@

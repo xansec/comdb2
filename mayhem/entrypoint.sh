@@ -2,6 +2,8 @@
 
 export PATH=$PATH:/comdb2/bb/bin
 
+DB_NAME=fuzzdb
+
 pmux -n
 comdb2 $DB_NAME &
 sleep 2

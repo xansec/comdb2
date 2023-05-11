@@ -2,7 +2,7 @@ project: comdb2
 target: cdb2-verify
 
 testsuite:
-  - file:///testsuite
+  - file:///testsuite/cdb2_verify
 
 cmds:
   - cmd: /comdb2/bb/bin/cdb2_verify @@

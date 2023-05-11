@@ -1,0 +1,15 @@
+project: comdb2
+target: comdb2-server
+
+testsuite:
+  - file:///testsuite/cdb2sql
+
+cmds:
+  - cmd: /comdb2/bb/bin/comdb2 fuzzdb
+    network:
+      url: tcp://localhost:19000
+      timeout: 5
+      client: false
+    dictionary: /sql.dict
+    env:
+      MFUZZ_DOCKER_ENTRYPOINT: "1"

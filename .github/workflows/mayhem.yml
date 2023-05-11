@@ -63,11 +63,13 @@ jobs:
       fail-fast: false
       matrix:
         mayhemfile:
-          - mayhem/cdb2sql.mayhemfile
-          - mayhem/cdb2_sqlreplay.mayhemfile
-          - mayhem/cdb2_stat.mayhemfile
-          - mayhem/cdb2_verify.mayhemfile
-          - mayhem/comdb2ar.mayhemfile
+          # - mayhem/cdb2sql.mayhemfile
+          # - mayhem/cdb2_sqlreplay.mayhemfile
+          # - mayhem/cdb2_stat.mayhemfile
+          # - mayhem/cdb2_verify.mayhemfile
+          # - mayhem/comdb2ar.mayhemfile
+          - mayhem/comdb2_client.mayhemfile
+          - mayhem/comdb2_server.mayhemfile
 
     steps:
       - uses: actions/checkout@v3

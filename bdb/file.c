@@ -115,6 +115,7 @@ extern int gbl_fullrecovery;
 extern char *gbl_myhostname;
 extern size_t gbl_blobmem_cap;
 extern int gbl_backup_logfiles;
+extern int gbl_commit_lsn_map;
 
 #define FILENAMELEN 100
 
@@ -157,6 +158,8 @@ static int close_dbs(bdb_state_type *bdb_state);
 static int close_dbs_txn(bdb_state_type *bdb_state, DB_TXN *tid);
 static int close_dbs_flush(bdb_state_type *bdb_state);
 static int bdb_watchdog_test_io_dir(bdb_state_type *bdb_state, char *dir);
+
+int __txn_commit_map_delete_logfile_txns(DB_ENV *, int);
 
 void berkdb_set_recovery(DB_ENV *dbenv);
 void watchdog_set_alarm(int seconds);
@@ -3505,6 +3508,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
     int filenum;
     int delete_adjacent;
     int ctrace_info = 0;
+    int commit_lsn_map = gbl_commit_lsn_map;
 
     filenums_str[0] = 0;
 
@@ -3848,6 +3852,11 @@ low_headroom:
              */
             if (filenum <= local_lowfilenum && gbl_new_snapisol_asof)
                 bdb_snapshot_asof_delete_log(bdb_state, filenum, sb.st_mtime);
+
+            /* Delete transactions that committed in this file from the commit LSN map. */
+            if (commit_lsn_map) {
+                __txn_commit_map_delete_logfile_txns(bdb_state->dbenv, filenum);
+            }
 
             if ((filenum <= lowfilenum && delete_adjacent) || is_low_headroom) {
                 /* delete this file if we got this far AND it's under the

@@ -10,7 +10,6 @@ cmds:
       url: tcp://localhost:19000
       timeout: 5
       client: true
-    filepath: /input
     dictionary: /sql.dict
     env:
       MFUZZ_DOCKER_ENTRYPOINT: "1"

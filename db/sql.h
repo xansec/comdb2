@@ -319,9 +319,7 @@ void currange_free(CurRange *cr);
 struct stored_proc;
 struct lua_State;
 struct dohsql;
-typedef struct dohsql dohsql_t;
 struct dohsql_node;
-typedef struct dohsql_node dohsql_node_t;
 typedef struct fdb_push_connector fdb_push_connector_t;
 
 enum early_verify_error {
@@ -784,6 +782,7 @@ struct sqlclntstate {
     int is_hasql_retry;
     int is_readonly;
     int is_readonly_set; /* Whether 'readonly' was set explicitly via SET command? */
+    int force_readonly;
     int is_expert;
     int is_fast_expert; /* 1 if not scanning data to generate stat1 */
     int added_to_hist;
@@ -865,7 +864,7 @@ struct sqlclntstate {
     int verify_remote_schemas;
 
     /* sharding scheme */
-    dohsql_t *conns;
+    struct dohsql *conns;
     int nconns;
     int conns_idx;
     int shard_slice;
@@ -930,6 +929,8 @@ struct sqlclntstate {
     // Latch last statement's cost for comdb2_last_cost to fetch
     int64_t last_cost;
     int disable_fdb_push;
+
+    int lastresptype;
 };
 
 /* Query stats. */
@@ -1278,7 +1279,7 @@ int fdb_add_remote_time(BtCursor *pCur, unsigned long long start,
  * refers to a remote table
  *
  */
-int fdb_push_run(Parse *pParse, dohsql_node_t *node);
+int fdb_push_run(Parse *pParse, struct dohsql_node *node);
 
 /**
  * Free remote push support

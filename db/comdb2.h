@@ -356,6 +356,7 @@ enum RCODES {
     ERR_INDEX_CONFLICT = 330,
     ERR_UNCOMMITABLE_TXN = 404, /* txn is uncommitable, returns ERR_VERIFY
                                    rather than retry */
+    ERR_DIST_ABORT = 430,       /* Prepared txn has been aborted */
     ERR_QUERY_REJECTED = 451,
     ERR_INCOHERENT = 996, /* prox2 understands it should retry another
                              node for 996 */
@@ -1565,6 +1566,7 @@ extern int gbl_identity_cache_max;
 extern int gbl_uses_accesscontrol_tableXnode;
 extern char* gbl_foreign_metadb;
 extern char* gbl_foreign_metadb_class;
+extern char* gbl_foreign_metadb_config;
 
 
 extern int gbl_upd_key;

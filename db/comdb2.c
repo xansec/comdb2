@@ -31,6 +31,7 @@ void berk_memp_sync_alarm_ms(int);
 #include <berkdb/dbinc/queue.h>
 #include <limits.h>
 
+#include <arpa/inet.h>
 #include <alloca.h>
 #include <ctype.h>
 #include <errno.h>
@@ -89,6 +90,7 @@ void berk_memp_sync_alarm_ms(int);
 #include "switches.h"
 #include "sqloffload.h"
 #include "osqlblockproc.h"
+#include "osqlblkseq.h"
 
 #include <sqliteInt.h>
 
@@ -137,6 +139,7 @@ void berk_memp_sync_alarm_ms(int);
 #include "comdb2_query_preparer.h"
 #include <net_appsock.h>
 #include "sc_csc2.h"
+#include "reverse_conn.h"
 
 #define tokdup strndup
 
@@ -302,6 +305,7 @@ int gbl_report_last;
 long gbl_report_last_n;
 long gbl_report_last_r;
 char *gbl_myhostname;      /* my hostname */
+char *gbl_mycname;      /* my cname */
 struct in_addr gbl_myaddr; /* my IPV4 address */
 int gbl_mynodeid = 0; /* node number, for backwards compatibility */
 pid_t gbl_mypid;      /* my pid */
@@ -387,7 +391,6 @@ int gbl_replicate_local_concurrent = 0;
 int gbl_allowbrokendatetime = 1;
 int gbl_sort_nulls_correctly = 1;
 int gbl_check_client_tags = 1;
-char *gbl_lrl_fname = NULL;
 char *gbl_spfile_name = NULL;
 char *gbl_timepart_file_name = NULL;
 int gbl_max_lua_instructions = 10000;
@@ -446,7 +449,7 @@ int gbl_enable_berkdb_retry_deadlock_bias = 0;
 int gbl_enable_cache_internal_nodes = 1;
 int gbl_use_appsock_as_sqlthread = 0;
 int gbl_rep_process_txn_time = 0;
-int gbl_utxnid_log = 1; 
+int gbl_utxnid_log = 1;
 int gbl_commit_lsn_map = 1;
 
 /* how many times we retry osql for verify */
@@ -665,8 +668,8 @@ int gbl_check_wrong_db = 1;
 int gbl_broken_max_rec_sz = 0;
 int gbl_private_blkseq = 1;
 int gbl_use_blkseq = 1;
-int gbl_reorder_socksql_no_deadlock = 1;
-int gbl_reorder_idx_writes = 1;
+int gbl_reorder_socksql_no_deadlock = 0;
+int gbl_reorder_idx_writes = 0;
 
 char *gbl_recovery_options = NULL;
 
@@ -1279,6 +1282,7 @@ static void *purge_old_files_thread(void *arg)
     int empty = 0;
     int empty_pause = 5; // seconds
     int retries = 0;
+    extern int gbl_all_prepare_leak;
 
     thrman_register(THRTYPE_PURGEFILES);
     thread_started("purgefiles");
@@ -1291,10 +1295,11 @@ static void *purge_old_files_thread(void *arg)
     while (!db_is_exiting()) {
         /* even though we only add files to be deleted on the master,
          * don't try to delete files, ever, if you're a replicant */
-        if (thedb->master != gbl_myhostname) {
+        if (thedb->master != gbl_myhostname || gbl_all_prepare_leak) {
             sleep_with_check_for_exiting(empty_pause);
             continue;
         }
+
         if (db_is_exiting())
             continue;
 
@@ -1502,9 +1507,6 @@ static void free_view_hash(hash_t *view_hash)
  */
 static void finish_clean()
 {
-    if(gbl_is_physical_replicant)
-        stop_replication();
-
     int rc = backend_close(thedb);
     if (rc != 0) {
         logmsg(LOGMSG_ERROR, "error backend_close() rc %d\n", rc);
@@ -1542,6 +1544,7 @@ static void finish_clean()
         free_view_hash(thedb->view_hash);
         thedb->view_hash = NULL;
     }
+    free(thedb->envname);
 
     cleanup_interned_strings();
     cleanup_peer_hash();
@@ -2675,6 +2678,7 @@ struct dbenv *newdbenv(char *dbname, char *lrlname)
 
     listc_init(&dbenv->lrl_handlers, offsetof(struct lrl_handler, lnk));
     listc_init(&dbenv->message_handlers, offsetof(struct message_handler, lnk));
+    tz_hash_init();
 
     plugin_post_dbenv_hook(dbenv);
 
@@ -2709,7 +2713,6 @@ struct dbenv *newdbenv(char *dbname, char *lrlname)
         return NULL;
     }
 
-    tz_hash_init();
     init_sql_hint_table();
     init_clientstats_table();
 
@@ -2804,7 +2807,7 @@ static int db_finalize_and_sanity_checks(struct dbenv *dbenv)
 
         /* last ditch effort to stop invalid schemas getting through */
         for (jj = 0; jj < db->nix && jj < MAXINDEX; jj++)
-            if (db->ix_keylen[jj] > MAXKEYLEN) {
+            if (db->ix_keylen[jj] > MAXKEYLEN + 1) {
                 have_bad_schema = 1;
                 logmsg(LOGMSG_FATAL, "Database %s index %d too large (%d)\n",
                        db->tablename, jj,
@@ -4055,6 +4058,19 @@ static int init(int argc, char **argv)
     load_dbstore_tableversion(thedb, NULL);
 
     gbl_backend_opened = 1;
+
+    /* Recovered prepares need the osql-cnonce hash */
+    if (!gbl_exit && !gbl_create_mode) {
+        rc = osql_blkseq_init();
+        if (rc) {
+            logmsg(LOGMSG_FATAL, "failed to initialize osql_blkseq hash\n");
+            return -1;
+        }
+    }
+
+    if (!gbl_exit && !gbl_create_mode && (thedb->nsiblings == 1 || thedb->master == gbl_myhostname)) {
+        bdb_upgrade_all_prepared(thedb->bdb_env);
+    }
 
     sqlinit();
     rc = create_datacopy_arrays();
@@ -5327,19 +5343,21 @@ static void register_all_int_switches()
 
 static void getmyid(void)
 {
-    char name[1024];
-    char *cname;
-
-    if (gethostname(name, sizeof(name))) {
-        logmsg(LOGMSG_ERROR, "%s: Failure to get local hostname!!!\n", __func__);
-        gbl_myhostname = "localhost";
-    } else if ((cname = comdb2_getcanonicalname(name)) != NULL) {
-        gbl_myhostname = intern(cname);
-    } else {
-        gbl_myhostname = intern(name);
+    int rc;
+    char *cname = NULL;
+    char buf[NI_MAXHOST];
+    if ((rc = gethostname(buf, sizeof(buf))) != 0) {
+        logmsg(LOGMSG_FATAL, "gethostname failed rc:%d err:%s\n", rc, strerror(errno));
+        abort();
     }
-
-    getmyaddr();
+    gbl_myhostname = intern(buf);
+    get_os_hostbyname()(&gbl_myhostname, &gbl_myaddr , &cname); // -> os_get_host_and_cname_by_name
+    if (cname) {
+        gbl_mycname = intern(cname);
+        free(cname);
+    } else {
+        gbl_mycname = gbl_myhostname;
+    }
     gbl_mypid = getpid();
 }
 
@@ -5620,8 +5638,9 @@ int main(int argc, char **argv)
         }
     }
 
+    logmsg(LOGMSG_USER, "hostname:%s  cname:%s\n", gbl_myhostname, gbl_mycname);
+    logmsg(LOGMSG_USER, "I AM READY.\n");
     gbl_ready = 1;
-    logmsg(LOGMSG_WARN, "I AM READY.\n");
 
     pthread_t timer_tid;
     pthread_attr_t timer_attr;
@@ -5634,6 +5653,8 @@ int main(int argc, char **argv)
     }
     Pthread_create(&timer_tid, &timer_attr, timer_thread, NULL);
     Pthread_attr_destroy(&timer_attr);
+
+    start_physrep_threads();
 
     if (!gbl_perform_full_clean_exit) {
         void *ret;

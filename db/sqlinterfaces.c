@@ -2928,7 +2928,7 @@ static void free_normalized_sql(
   }
 }
 
-static void free_original_normalized_sql(
+void free_original_normalized_sql(
   struct sqlclntstate *clnt
 ){
   if (clnt->work.zOrigNormSql) {
@@ -3876,13 +3876,6 @@ static void handle_stored_proc(struct sqlthdstate *thd,
     free_original_normalized_sql(clnt);
     normalize_stmt_and_store(clnt, NULL, 1);
 
-    if (clnt->work.zOrigNormSql) {
-        size_t nOrigNormSql = 0;
-
-        calc_fingerprint(clnt->work.zOrigNormSql, &nOrigNormSql,
-                            clnt->work.aFingerprint);
-    }
-
     memset(&clnt->spcost, 0, sizeof(struct sql_hist_cost));
     int rc = exec_procedure(thd, clnt, &errstr);
     if (rc) {
@@ -3900,6 +3893,13 @@ static void handle_stored_proc(struct sqlthdstate *thd,
     if (!in_client_trans(clnt))
         clnt->dbtran.trans_has_sp = 0;
     test_no_btcursors(thd);
+    if (clnt->work.zOrigNormSql) {
+        size_t nOrigNormSql = 0;
+
+        // calculate aFingerprint here since exec_procedure will update aFingerprint to last sql stmt found in stored
+        // procedure
+        calc_fingerprint(clnt->work.zOrigNormSql, &nOrigNormSql, clnt->work.aFingerprint);
+    }
     sqlite_done(thd, clnt, &rec, 0);
 }
 
@@ -4498,8 +4498,7 @@ static void sqlengine_work_lua_thread(void *thddata, void *work)
 int gbl_debug_sqlthd_failures;
 int gbl_enable_internal_sql_stmt_caching = 1;
 
-static int execute_verify_indexes(struct sqlthdstate *thd,
-                                  struct sqlclntstate *clnt)
+static int execute_verify_indexes(struct sqlthdstate *thd, struct sqlclntstate *clnt)
 {
     int rc;
     stmt_cache_entry_t *cached_entry = NULL;
@@ -5240,6 +5239,9 @@ void cleanup_clnt(struct sqlclntstate *clnt)
     Pthread_mutex_destroy(&clnt->sql_lk);
 }
 
+int gbl_unexpected_last_type_warn = 1;
+int gbl_unexpected_last_type_abort = 0;
+
 void reset_clnt(struct sqlclntstate *clnt, int initial)
 {
     if (initial) {
@@ -5259,6 +5261,13 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
        clnt->last_reset_time = comdb2_time_epoch();
        clnt_change_state(clnt, CONNECTION_RESET);
        clnt->plugin.set_timeout(clnt, gbl_sqlwrtimeoutms);
+       if (clnt->lastresptype != RESPONSE_TYPE__LAST_ROW && clnt->lastresptype != 0) {
+           if (gbl_unexpected_last_type_warn)
+               logmsg(LOGMSG_ERROR, "Unexpected previous response type %d origin %s task %s\n",
+                      clnt->lastresptype, clnt->origin, clnt->argv0);
+           if (gbl_unexpected_last_type_abort)
+               abort();
+       }
     }
 
     clnt->pPool = NULL; /* REDUNDANT? */
@@ -6354,6 +6363,9 @@ int blockproc2sql_error(int rc, const char *func, int line)
 
     case ERR_CONSTR:
         return CDB2ERR_CONSTRAINTS;
+
+    case ERR_DIST_ABORT:
+        return CDB2ERR_DIST_ABORT;
 
     case ERR_NULL_CONSTRAINT:
         return CDB2ERR_NULL_CONSTRAINT;

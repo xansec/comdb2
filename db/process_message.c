@@ -1,5 +1,5 @@
 /*
-   Copyright 2015, 2017, Bloomberg Finance L.P.
+   Copyright 2015, 2023, Bloomberg Finance L.P.
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -62,6 +62,8 @@ extern int __berkdb_read_alarm_ms;
 #include "comdb2_ruleset.h"
 #include "osqluprec.h"
 #include "schemachange.h"
+#include "reverse_conn.h"
+#include "phys_rep.h"
 
 extern struct ruleset *gbl_ruleset;
 extern int gbl_exit_alarm_sec;
@@ -84,6 +86,7 @@ extern int gbl_reallyearly;
 extern int gbl_udp;
 extern int gbl_prefault_udp;
 extern int gbl_prefault_latency;
+extern int gbl_commit_lsn_map;
 extern struct thdpool *gbl_verify_thdpool;
 
 void debug_bulktraverse_data(char *tbl);
@@ -600,6 +603,8 @@ void *clean_exit_thd(void *unused)
     comdb2_name_thread(__func__);
     if (!gbl_ready)
         return NULL;
+
+    physrep_cleanup();
 
     Pthread_mutex_lock(&exiting_lock);
     if (gbl_exit) {
@@ -1689,6 +1694,8 @@ clipper_usage:
             thdpool_print_stats(stdout, gbl_osqlpfault_thdpool);
             thdpool_print_stats(stdout, gbl_udppfault_thdpool);
             thdpool_print_stats(stdout, gbl_pgcompact_thdpool);
+        } else if (tokcmp(tok, ltok, "dumprevsql") == 0) {
+            dump_reverse_connection_host_list();
         } else if (tokcmp(tok, ltok, "dumpsql") == 0) {
             sql_dump_running_statements();
         } else if (tokcmp(tok, ltok, "rep") == 0) {
@@ -3244,6 +3251,24 @@ clipper_usage:
             thdpool_process_message(gbl_verify_thdpool, line, lline, st);
         else
             logmsg(LOGMSG_WARN, "verifypool is not initialized\n");
+    } else if (tokcmp(tok, ltok, "disttxn") == 0) {
+        char dist_txnid[128] = {0};
+        int found = 0;
+        tok = segtok(line, lline, &st, &ltok);
+        if (ltok > 0) {
+            memcpy(dist_txnid, tok, ltok < sizeof(dist_txnid) ? ltok : sizeof(dist_txnid) - 1);
+            found = 1;
+        }
+        tok = segtok(line, lline, &st, &ltok);
+        if ((tokcmp(tok, ltok, "commit") == 0) && found) {
+            dbenv->bdb_env->dbenv->txn_commit_recovered(dbenv->bdb_env->dbenv, dist_txnid);
+        } else if ((tokcmp(tok, ltok, "abort") == 0) && found) {
+            dbenv->bdb_env->dbenv->txn_abort_recovered(dbenv->bdb_env->dbenv, dist_txnid);
+        } else if ((tokcmp(tok, ltok, "discard") == 0) && found) {
+            dbenv->bdb_env->dbenv->txn_discard_recovered(dbenv->bdb_env->dbenv, dist_txnid);
+        } else {
+            logmsg(LOGMSG_ERROR, "Expected <dist-txnid> 'commit', 'abort', or 'discard'\n");
+        }
     } else if (tokcmp(tok, ltok, "oldestgenids") == 0) {
         int i, stripe;
         void *buf = malloc(64 * 1024);
@@ -4928,6 +4953,28 @@ clipper_usage:
             Pthread_mutex_unlock(&testguard);
         } else if (tokcmp(tok, ltok, "bad_osql") == 0) {
             osql_send_test();
+        } else if (tokcmp(tok, ltok, "reversesql") == 0) {
+            char *dbname;
+            char *host;
+            char *query;
+
+            tok = segtok(line, lline, &st, &ltok);
+            if (ltok == 0) {
+                logmsg(LOGMSG_ERROR, "Need database name and host\n");
+                return -1;
+            }
+            dbname = tokdup(tok, ltok);
+
+            tok = segtok(line, lline, &st, &ltok);
+            if (ltok == 0) {
+                logmsg(LOGMSG_ERROR, "Need database name and host\n");
+                return -1;
+            }
+            host = tokdup(tok, ltok);
+
+            query = tok+ltok;
+
+            send_reversesql_request(dbname, host, query);
         } else if (tokcmp(tok, ltok, "rep") == 0) { // was testrep
             int nitems;
             int size;
@@ -4958,6 +5005,21 @@ clipper_usage:
             thdpool_print_stats(stdout, gbl_verify_thdpool);
         else
             logmsg(LOGMSG_USER, "Verify threadpool is not active\n");
+    } else if (tokcmp(tok, ltok, "clm_delete_logfile") == 0) {
+        if (gbl_commit_lsn_map) {
+            int del_log;
+
+            tok = segtok(line, lline, &st, &ltok);
+            del_log = toknum(tok, ltok);
+
+            if (del_log < 1) {
+                logmsg(LOGMSG_ERROR, "Usage: log number must be greater than 0\n");
+            } else {
+		delete_logfile_txns_commit_lsn_map(thedb->bdb_env, del_log);
+            }
+        } else {
+            logmsg(LOGMSG_USER, "Commit LSN map is not active\n");
+        }
     } else {
         // see if any plugins know how to handle this
         struct message_handler *h;

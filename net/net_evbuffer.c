@@ -1769,20 +1769,24 @@ static void get_stat_evbuffer(struct event_info *e, net_queue_stat_t *stat)
     }
 }
 
-static ssize_t readv_evbuffer(struct evbuffer *buf, int fd)
+static ssize_t readv_evbuffer(struct event_info *e)
 {
+    int fd = e->fd;
+    struct evbuffer *buf = e->rd_buf;
 #   define NVEC 8
     struct iovec v[NVEC];
 #   ifdef FIONREAD
     int avail;
     (void)ioctl(fd, FIONREAD, &avail);
     if (avail <= 0) avail = TCP_BUFSZ;
+    else if (avail > TCP_BUFSZ) avail = TCP_BUFSZ;
 #   else
 #   pragma message("FIONREAD not available")
     avail = TCP_BUFSZ;
 #   endif
     const int nv = evbuffer_reserve_space(buf, avail, v, NVEC);
     if (nv <= 0) {
+        hprintf("evbuffer_reserve_space failed nv:%d need:%d\n", nv, avail);
         errno = ENOMEM;
         return -1;
     }
@@ -1811,9 +1815,8 @@ static void readcb(int fd, short what, void *data)
     if (fd != e->fd) abort();
     /* Writing my own readv wrapper; Observed max read of 4K with:
     ssize_t n = evbuffer_read(e->rd_buf, e->fd, -1); */
-    ssize_t n = readv_evbuffer(e->rd_buf, e->fd);
+    ssize_t n = readv_evbuffer(e);
     if (n <= 0) {
-        hprintf("readv rc:%zd errno:%d:%s\n", n, errno, strerror(errno));
         reconnect:
         do_disable_read(e);
         reconnect(e);
@@ -2582,6 +2585,37 @@ static void read_len(int fd, short what, void *data)
     }
 }
 
+int do_appsock_evbuffer(struct evbuffer *buf, struct sockaddr_in *ss, int fd, int is_readonly)
+{
+    struct appsock_info *info = NULL;
+    struct evbuffer_ptr b = evbuffer_search(buf, "\n", 1, NULL);
+    if (b.pos == -1) {
+        b = evbuffer_search(buf, " ", 1, NULL);
+    }
+
+    if (b.pos != -1) {
+        char key[b.pos + 2];
+        evbuffer_copyout(buf, key, b.pos + 1);
+        key[b.pos + 1] = 0;
+        info = get_appsock_info(key);
+    }
+
+    if (info == NULL) return 1;
+
+    evbuffer_drain(buf, b.pos + 1);
+    struct appsock_handler_arg *arg = malloc(sizeof(*arg));
+    arg->fd = fd;
+    arg->addr = *ss;
+    arg->rd_buf = buf;
+    arg->is_readonly = is_readonly;
+
+    static int appsock_counter = 0;
+    arg->base = appsock_base[appsock_counter++];
+    if (appsock_counter == NUM_APPSOCK_RD) appsock_counter = 0;
+    evtimer_once(arg->base, info->cb, arg); /* handle_newsql_request_evbuffer */
+    return 0;
+}
+
 static void do_read(int fd, short what, void *data)
 {
     check_base_thd();
@@ -2614,30 +2648,10 @@ static void do_read(int fd, short what, void *data)
         shutdown_close(fd);
         return;
     }
-    struct appsock_info *info = NULL;
-    struct evbuffer_ptr b = evbuffer_search(buf, "\n", 1, NULL);
-    if (b.pos == -1) {
-        b = evbuffer_search(buf, " ", 1, NULL);
-    }
-    if (b.pos != -1) {
-        char key[b.pos + 2];
-        evbuffer_copyout(buf, key, b.pos + 1);
-        key[b.pos + 1] = 0;
-        info = get_appsock_info(key);
-    }
-    if (info) {
-        evbuffer_drain(buf, b.pos + 1);
-        struct appsock_handler_arg *arg = malloc(sizeof(*arg));
-        arg->fd = fd;
-        arg->addr = ss;
-        arg->rd_buf = buf;
 
-        static int appsock_counter = 0;
-        arg->base = appsock_base[appsock_counter++];
-        if (appsock_counter == NUM_APPSOCK_RD) appsock_counter = 0;
-        evtimer_once(arg->base, info->cb, arg); /* handle_newsql_request_evbuffer */
+    if ((do_appsock_evbuffer(buf, &ss, fd, 0)) == 0)
         return;
-    }
+
     handle_appsock(netinfo_ptr, &ss, first_byte, buf, fd);
 }
 

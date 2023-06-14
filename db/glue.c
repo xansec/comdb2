@@ -4013,6 +4013,8 @@ int backend_open_tran(struct dbenv *dbenv, tran_type *tran, uint32_t flags)
     }
 
     if (!dbenv->meta) {
+        /* open the meta file for the "static table". */
+        (void)open_auxdbs(&dbenv->static_table, 0);
         for (ii = 0; ii < dbenv->num_dbs; ii++) {
             rc = open_auxdbs(dbenv->dbs[ii], 0);
             /* We still have production comdb2s that don't have meta, so we
@@ -5936,6 +5938,12 @@ int ix_check_update_genid(struct ireq *iq, void *trans,
 unsigned long long get_commit_context(const void *plsn, uint32_t generation)
 {
     return bdb_gen_commit_genid(thedb->bdb_env, plsn, generation);
+}
+
+int set_commit_context_prepared(unsigned long long context)
+{
+    bdb_set_commit_genid(thedb->bdb_env, context, NULL, NULL, NULL, 0);
+    return 0;
 }
 
 int set_commit_context(unsigned long long context, uint32_t *generation,
